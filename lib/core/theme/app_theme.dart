@@ -27,23 +27,47 @@ class AppTheme {
         style: ElevatedButton.styleFrom(
           backgroundColor: primaryBlue,
           foregroundColor: Colors.white,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
           padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 20),
         ),
       ),
+
+      //Estilo global para todos los TextFormField
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
         fillColor: Colors.white,
+        labelStyle: const TextStyle(color: textGray, fontSize: 15),
+        hintStyle: const TextStyle(color: Colors.black54),
         contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-        border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(10),
+          borderSide: const BorderSide(color: Colors.black26),
+        ),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(10),
+          borderSide: const BorderSide(color: Colors.black26),
+        ),
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(10),
           borderSide: const BorderSide(color: secondaryBlue, width: 2),
         ),
       ),
+
+      textSelectionTheme: const TextSelectionThemeData(
+        cursorColor: secondaryBlue, // 👈 color visible del cursor
+      ),
+
       textTheme: const TextTheme(
-        titleLarge: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: primaryBlue),
-        bodyMedium: TextStyle(fontSize: 16, color: textGray),
+        
+        titleLarge: TextStyle(
+          fontSize: 20,
+          fontWeight: FontWeight.bold,
+          color: primaryBlue,
+        ),
+        bodyMedium: TextStyle(color: Colors.black),
+        bodyLarge: TextStyle(color: Colors.black),
       ),
     );
   }

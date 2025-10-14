@@ -1,39 +1,73 @@
 import 'package:flutter/material.dart';
+import 'package:neurodrive/data/repositories/auth_repository.dart';
 import 'package:neurodrive/data/models/user_model.dart';
 
-/// Simple auth manager storing a user in memory (replace later with repository)
-class AuthProvider extends ChangeNotifier {
-  static final AuthProvider instance = AuthProvider._private();
-  AuthProvider._private();
+class AppAuthProvider extends ChangeNotifier {
+  final AuthRepository _repository = AuthRepository();
 
-  UserModel? _userModel;
-  bool get isLogged => _userModel != null;
-  UserModel? get user => _userModel;
+  UserModel? _user;
+  bool _isLoading = false;
+  String? _error;
 
-  Future<bool> login(String email, String password) async {
-    // Simulated login: accept any email/password for now
-    await Future.delayed(const Duration(milliseconds: 700));
-    _userModel = UserModel(id: 'u1', name: 'Conductor', email: email, phone: '3000000000', plate: 'ABC123', emergencyContact: '3001112222');
-    notifyListeners();
-    return true;
+  UserModel? get user => _user;
+  bool get isLoading => _isLoading;
+  String? get error => _error;
+
+  /// Iniciar sesión
+  Future<void> login(String email, String password) async {
+    try {
+      _isLoading = true;
+      _error = null;
+      notifyListeners();
+
+      final loggedUser = await _repository.loginUser(email, password);
+      _user = loggedUser;
+
+    } catch (e) {
+      _error = e.toString();
+    } finally {
+      _isLoading = false;
+      notifyListeners();
+    }
   }
 
+  /// Registrar usuario
+  Future<void> register({
+    required String name,
+    required String email,
+    required String password,
+    required String phone,
+    required String plate,
+    required String emergencyContact,
+  }) async {
+    try {
+      _isLoading = true;
+      _error = null;
+      notifyListeners();
+
+      final newUser = await _repository.registerUser(
+        name: name,
+        email: email,
+        password: password,
+        phone: phone,
+        plate: plate,
+        emergencyContact: emergencyContact,
+      );
+
+      _user = newUser;
+
+    } catch (e) {
+      _error = e.toString();
+    } finally {
+      _isLoading = false;
+      notifyListeners();
+    }
+  }
+
+  /// Cerrar sesión
   Future<void> logout() async {
-    _userModel = null;
+    await _repository.logout();
+    _user = null;
     notifyListeners();
-  }
-
-  Future<bool> register(Map<String, dynamic> data) async {
-    await Future.delayed(const Duration(milliseconds: 700));
-    _userModel = UserModel(
-      id: 'u${DateTime.now().millisecondsSinceEpoch}',
-      name: data['name'] ?? 'Sin nombre',
-      email: data['email'] ?? '',
-      phone: data['phone'] ?? '',
-      plate: data['plate'] ?? '',
-      emergencyContact: data['emergency'] ?? '',
-    );
-    notifyListeners();
-    return true;
   }
 }
