@@ -4,7 +4,13 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:provider/provider.dart';
 import 'package:neurodrive/core/theme/app_theme.dart';
+import 'package:neurodrive/presentation/state/auth_provider.dart';
+import 'package:neurodrive/data/services/hardware_bridge_service.dart';
+import 'package:neurodrive/data/services/notification_service.dart';
+import 'package:neurodrive/data/repositories/telemetry_repository.dart';
+import 'package:neurodrive/data/models/telemetry_model.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -14,25 +20,86 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  String drivingStatus = 'normal'; // normal, warning, danger
+  String drivingStatus = 'normal';
   bool isTripActive = false;
-
   DateTime? startTime;
   Position? startPosition;
   Timer? sensorTimer;
+  
+  // Para monitoreo de telemetría
+  StreamSubscription<TelemetryModel?>? _telemetrySubscription;
+  final TelemetryMonitor _monitor = TelemetryMonitor();
+  TelemetryModel? _currentTelemetry;
 
   @override
   void initState() {
     super.initState();
+    NotificationService.initialize();
+    _startTelemetryMonitoring();
   }
 
   @override
   void dispose() {
     sensorTimer?.cancel();
+    _telemetrySubscription?.cancel();
     super.dispose();
   }
 
-  // --- Simulación IA/sensores ---
+  /// Iniciar monitoreo de telemetría en tiempo real
+  void _startTelemetryMonitoring() {
+    final userId = FirebaseAuth.instance.currentUser?.uid;
+    if (userId == null) return;
+
+    final repository = TelemetryRepository();
+    _telemetrySubscription = repository.watchUserTelemetry(userId).listen((data) {
+      if (data == null) return;
+      
+      setState(() {
+        _currentTelemetry = data;
+      });
+
+      // Analizar y mostrar alertas
+      final alert = _monitor.analyzeTelemetry(data);
+      if (alert != null && mounted) {
+        _handleAlert(alert);
+      }
+    });
+  }
+
+  /// Manejar alertas de telemetría
+  void _handleAlert(TelemetryAlert alert) {
+    switch (alert.severity) {
+      case AlertSeverity.danger:
+        // Notificación crítica + diálogo
+        NotificationService.showCriticalAlert(
+          title: '⚠️ ALERTA CRÍTICA',
+          body: alert.message,
+          id: DateTime.now().millisecondsSinceEpoch ~/ 1000,
+        );
+        NotificationService.showCriticalDialog(
+          context,
+          title: 'Alerta de Seguridad',
+          message: alert.message,
+        );
+        break;
+      case AlertSeverity.warning:
+        // Banner flotante
+        NotificationService.showInAppBanner(
+          context,
+          message: alert.message,
+          type: NotificationType.warning,
+        );
+        break;
+      case AlertSeverity.info:
+        NotificationService.showInAppBanner(
+          context,
+          message: alert.message,
+          type: NotificationType.info,
+        );
+        break;
+    }
+  }
+
   void _simulateDrivingStatus() {
     final random = Random();
     final value = random.nextInt(100);
@@ -48,7 +115,6 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
-  // --- Iniciar viaje ---
   Future<void> _startTrip() async {
     bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
     if (!serviceEnabled) {
@@ -72,13 +138,11 @@ class _HomeScreenState extends State<HomeScreen> {
       startPosition = position;
     });
 
-    // simular IA cada 3 segundos
     sensorTimer = Timer.periodic(const Duration(seconds: 3), (_) {
       _simulateDrivingStatus();
     });
   }
 
-  // --- Finalizar viaje ---
   Future<void> _endTrip() async {
     final endTime = DateTime.now();
     final endPosition = await Geolocator.getCurrentPosition();
@@ -118,8 +182,46 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  /// Llamada de emergencia
+  Future<void> _handleEmergencyCall() async {
+    try {
+      await CallService.callEmergency();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error al llamar: $e')),
+        );
+      }
+    }
+  }
+
+  /// Llamada a contacto de emergencia
+  Future<void> _handleEmergencyContactCall() async {
+    try {
+      final authProvider = Provider.of<AppAuthProvider>(context, listen: false);
+      final emergencyContact = authProvider.user?.emergencyContact ?? '';
+      
+      if (emergencyContact.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No tienes contacto de emergencia registrado')),
+        );
+        return;
+      }
+
+      await CallService.callEmergencyContact(emergencyContact);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e')),
+        );
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
+    final authProvider = Provider.of<AppAuthProvider>(context);
+    
     final Color bgColor;
     final IconData icon;
     final String message;
@@ -146,6 +248,33 @@ class _HomeScreenState extends State<HomeScreen> {
         title: const Text('NeuroDrive'),
         backgroundColor: AppTheme.primaryBlue,
         actions: [
+          // Indicador de frecuencia cardíaca en tiempo real
+          if (_currentTelemetry != null)
+            Padding(
+              padding: const EdgeInsets.only(right: 8),
+              child: Center(
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withOpacity(0.2),
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.favorite, color: Colors.red, size: 16),
+                      const SizedBox(width: 4),
+                      Text(
+                        '${_currentTelemetry!.heartRate.toInt()} bpm',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
           Builder(
             builder: (context) => IconButton(
               icon: const Icon(Icons.menu),
@@ -158,46 +287,23 @@ class _HomeScreenState extends State<HomeScreen> {
         child: ListView(
           padding: EdgeInsets.zero,
           children: [
-            FutureBuilder<DocumentSnapshot>(
-              future: FirebaseFirestore.instance
-                  .collection('users')
-                  .doc(FirebaseAuth.instance.currentUser?.uid)
-                  .get(),
-              builder: (context, snapshot) {
-                if (snapshot.connectionState == ConnectionState.waiting) {
-                  return const DrawerHeader(
-                    decoration: BoxDecoration(color: Color(0xFF0C3C78)),
-                    child: Center(
-                      child: CircularProgressIndicator(color: Colors.white),
-                    ),
-                  );
-                }
-
-                final userData =
-                    snapshot.data?.data() as Map<String, dynamic>? ?? {};
-                final name = userData['name'] ?? 'Usuario sin nombre';
-                final email = userData['email'] ??
-                    FirebaseAuth.instance.currentUser?.email ??
-                    'Correo no disponible';
-
-                return DrawerHeader(
-                  decoration: const BoxDecoration(color: Color(0xFF0C3C78)),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Icon(Icons.account_circle,
-                          size: 50, color: Colors.white),
-                      const SizedBox(height: 10),
-                      Text(name,
-                          style: const TextStyle(
-                              color: Colors.white, fontSize: 18)),
-                      Text(email,
-                          style: const TextStyle(
-                              color: Colors.white70, fontSize: 14)),
-                    ],
+            DrawerHeader(
+              decoration: const BoxDecoration(color: Color(0xFF0C3C78)),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Icon(Icons.account_circle, size: 50, color: Colors.white),
+                  const SizedBox(height: 10),
+                  Text(
+                    authProvider.user?.name ?? 'Usuario',
+                    style: const TextStyle(color: Colors.white, fontSize: 18),
                   ),
-                );
-              },
+                  Text(
+                    authProvider.user?.email ?? '',
+                    style: const TextStyle(color: Colors.white70, fontSize: 14),
+                  ),
+                ],
+              ),
             ),
             ListTile(
               leading: const Icon(Icons.settings),
@@ -208,7 +314,7 @@ class _HomeScreenState extends State<HomeScreen> {
               leading: const Icon(Icons.logout),
               title: const Text('Cerrar sesión'),
               onTap: () async {
-                await FirebaseAuth.instance.signOut();
+                await authProvider.logout();
                 if (context.mounted) {
                   Navigator.pushReplacementNamed(context, '/login');
                 }
@@ -250,8 +356,6 @@ class _HomeScreenState extends State<HomeScreen> {
               textAlign: TextAlign.center,
             ),
             const SizedBox(height: 40),
-
-            // Botón de iniciar / finalizar viaje
             AnimatedContainer(
               duration: const Duration(milliseconds: 400),
               height: isTripActive ? 55 : 70,
@@ -261,8 +365,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   isTripActive ? _endTrip() : _startTrip();
                 },
                 style: ElevatedButton.styleFrom(
-                  backgroundColor:
-                      isTripActive ? Colors.red : AppTheme.primaryBlue,
+                  backgroundColor: isTripActive ? Colors.red : AppTheme.primaryBlue,
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(30),
                   ),
@@ -276,13 +379,29 @@ class _HomeScreenState extends State<HomeScreen> {
           ],
         ),
       ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: () {},
-        label: const Text('SOS'),
-        icon: const Icon(Icons.emergency),
-        backgroundColor: Colors.deepPurpleAccent,
+      floatingActionButton: Column(
+        mainAxisAlignment: MainAxisAlignment.end,
+        children: [
+          // Botón SOS - Emergencias
+          FloatingActionButton.extended(
+            heroTag: 'emergency',
+            onPressed: _handleEmergencyCall,
+            label: const Text('SOS 911'),
+            icon: const Icon(Icons.emergency),
+            backgroundColor: Colors.red.shade600,
+          ),
+          const SizedBox(height: 12),
+          // Botón contacto de emergencia
+          FloatingActionButton.extended(
+            heroTag: 'emergency_contact',
+            onPressed: _handleEmergencyContactCall,
+            label: const Text('Contacto'),
+            icon: const Icon(Icons.phone),
+            backgroundColor: Colors.deepOrange.shade600,
+          ),
+        ],
       ),
-      floatingActionButtonLocation: FloatingActionButtonLocation.centerDocked,
+      floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
       bottomNavigationBar: BottomAppBar(
         shape: const CircularNotchedRectangle(),
         notchMargin: 10,
@@ -302,6 +421,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 Navigator.pushNamed(context, '/history');
               },
             ),
+            const SizedBox(width: 80), // Espacio para FABs
           ],
         ),
       ),

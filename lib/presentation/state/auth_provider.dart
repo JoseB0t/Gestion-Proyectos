@@ -13,6 +13,9 @@ class AppAuthProvider extends ChangeNotifier {
   bool get isLoading => _isLoading;
   String? get error => _error;
 
+  bool get isAdmin => _user?.isAdmin ?? false;
+  bool get isUser => _user?.isUser ?? false;
+
   /// Iniciar sesión
   Future<void> login(String email, String password) async {
     try {
@@ -39,6 +42,7 @@ class AppAuthProvider extends ChangeNotifier {
     required String phone,
     required String plate,
     required String emergencyContact,
+    String role = 'user',
   }) async {
     try {
       _isLoading = true;
@@ -52,6 +56,7 @@ class AppAuthProvider extends ChangeNotifier {
         phone: phone,
         plate: plate,
         emergencyContact: emergencyContact,
+        role: role,
       );
 
       _user = newUser;

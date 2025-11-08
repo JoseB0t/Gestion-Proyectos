@@ -5,6 +5,7 @@ class UserModel {
   final String phone;
   final String plate;
   final String emergencyContact;
+  final String role;
 
   UserModel({
     required this.id,
@@ -13,6 +14,7 @@ class UserModel {
     required this.phone,
     required this.plate,
     required this.emergencyContact,
+    this.role = 'user',
   });
 
   factory UserModel.fromJson(Map<String, dynamic> j) => UserModel(
@@ -22,6 +24,7 @@ class UserModel {
         phone: j['phone'] ?? '',
         plate: j['plate'] ?? '',
         emergencyContact: j['emergencyContact'] ?? '',
+        role: j['role'] ?? 'user',
       );
 
   Map<String, dynamic> toJson() => {
@@ -31,5 +34,9 @@ class UserModel {
         'phone': phone,
         'plate': plate,
         'emergencyContact': emergencyContact,
+        'role': role,
       };
+
+      bool get isAdmin => role == 'admin';
+      bool get isUser => role == 'user';
 }

@@ -14,6 +14,7 @@ class AuthRepository {
     required String phone,
     required String plate,
     required String emergencyContact,
+    String role = 'user',
   }) async {
     // Crear usuario en Firebase Authentication
     final userCredential = await _auth.createUserWithEmailAndPassword(
@@ -30,6 +31,7 @@ class AuthRepository {
       phone: phone,
       plate: plate,
       emergencyContact: emergencyContact,
+      role: role,
     );
 
     //Guardar datos del usuario en Firestore
@@ -56,5 +58,9 @@ class AuthRepository {
   /// Cerrar sesión
   Future<void> logout() async {
     await _auth.signOut();
+  }
+
+  Future<void> updateUserRole(String userId, String newRole) async {
+    await _firestore.collection('users').doc(userId).update({'role': newRole});
   }
 }
