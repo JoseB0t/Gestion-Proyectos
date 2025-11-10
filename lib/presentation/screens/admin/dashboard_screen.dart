@@ -257,26 +257,14 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                       icon: Icons.bar_chart,
                       title: 'Reportes Detallados',
                       subtitle: 'Análisis y estadísticas avanzadas',
-                      onTap: () {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                            content: Text('Función próximamente'),
-                          ),
-                        );
-                      },
+                      onTap: () => Navigator.pushNamed(context, '/admin-reports'),
                     ),
                     const SizedBox(height: 12),
                     _ActionButton(
                       icon: Icons.notifications_active,
                       title: 'Alertas Críticas',
                       subtitle: 'Ver historial de alertas',
-                      onTap: () {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                            content: Text('Función próximamente'),
-                          ),
-                        );
-                      },
+                      onTap: () => Navigator.pushNamed(context, '/admin-notifications'),
                     ),
                   ],
                 ),

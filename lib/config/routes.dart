@@ -46,6 +46,16 @@ class RoleBasedNavigation {
           label: 'Conductores',
           route: '/admin-drivers',
         ),
+        NavigationItem(
+          icon: Icons.report,
+          label: 'Reportes',
+          route: '/admin-reports',
+        ),
+        NavigationItem(
+          icon: Icons.notifications,
+          label: 'Notificaciones',
+          route: '/admin-notifications',
+        ),
       ];
     } else {
       return [

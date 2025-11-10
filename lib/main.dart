@@ -8,6 +8,8 @@ import 'package:neurodrive/config/routes.dart';
 import 'package:neurodrive/firebase_options.dart';
 import 'package:neurodrive/presentation/state/auth_provider.dart';
 import 'package:neurodrive/data/services/fcm_service.dart';
+//import 'package:neurodrive/data/services/realtime_database_service.dart';
+import 'package:neurodrive/data/services/notification_service.dart';
 
 // Handler para mensajes en segundo plano (debe estar fuera de main)
 @pragma('vm:entry-point')
@@ -24,6 +26,12 @@ void main() async {
   
   // Configurar handler de mensajes en segundo plano
   FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
+
+  // Inicializar Realtime Database
+  //await RealtimeDatabaseService.initialize();
+  
+  // Inicializar notificaciones
+  await NotificationService.initialize();
   
   // Inicializar FCM
   await FCMService.initialize();
