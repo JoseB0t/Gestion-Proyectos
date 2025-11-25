@@ -1,14 +1,15 @@
 import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_database/firebase_database.dart';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:provider/provider.dart';
 import 'package:neurodrive/core/theme/app_theme.dart';
-import 'package:neurodrive/presentation/state/auth_provider.dart';
-import 'package:neurodrive/data/services/hardware_bridge_service.dart';
 import 'package:neurodrive/data/services/notification_service.dart';
-import 'package:neurodrive/data/services/realtime_database_service.dart';
+import 'package:neurodrive/presentation/state/auth_provider.dart';
+import 'package:neurodrive/data/services/esp_service.dart';
+import 'package:neurodrive/data/services/call_service.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -23,16 +24,17 @@ class _HomeScreenState extends State<HomeScreen> {
   DateTime? startTime;
   Position? startPosition;
   
-  // Suscripción a telemetría en tiempo real
-  StreamSubscription<Map<String, dynamic>?>? _telemetrySubscription;
+  // Suscripción a lecturas del ESP32 en tiempo real
+  StreamSubscription<DatabaseEvent>? _esp32Subscription;
   
-  // Datos de telemetría actuales (desde ESP32)
-  double currentHeartRate = 0.0;
-  bool handsOnWheel = true;
-  double accelX = 0.0;
-  double accelY = 0.0;
-  double pressure = 0.0;
-  DateTime? lastTelemetryUpdate;
+  // Datos de sensores actuales (del ESP32)
+  int heartRate = 0;
+  bool handsOnWheel = false;
+  int accelX = 0;
+  int accelY = 0;
+  int accelZ = 0;
+  int fuerza = 0;
+  DateTime? lastUpdate;
   
   // Estado de conducción calculado
   DrivingStatus drivingStatus = DrivingStatus.normal;
@@ -43,110 +45,123 @@ class _HomeScreenState extends State<HomeScreen> {
   DateTime? _lastMovementAlert;
   final Duration _alertCooldown = const Duration(seconds: 30);
 
+  // NUEVO: Controlador de animación para evitar latencia
+  late AnimationController _statusAnimationController;
+
   @override
   void initState() {
     super.initState();
-    _startTelemetryMonitoring();
+    _initializeESP32Connection();
+    _startListeningToESP32();
+    // Solicitar permisos de llamada al iniciar
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      CallService.requestPhonePermission(context);
+    });
   }
 
   @override
   void dispose() {
-    _telemetrySubscription?.cancel();
+    _esp32Subscription?.cancel();
     super.dispose();
   }
 
-  /// Monitorear telemetría en tiempo real desde Firebase Realtime Database
-  void _startTelemetryMonitoring() {
+  /// Inicializar conexión con ESP32
+  Future<void> _initializeESP32Connection() async {
     final userId = FirebaseAuth.instance.currentUser?.uid;
     if (userId == null) return;
 
-    // Escuchar cambios en tiempo real
-    _telemetrySubscription = RealtimeDatabaseService
-        .watchTelemetry(userId)
-        .listen(
-          _handleTelemetryUpdate,
-          onError: (error) {
-            debugPrint('❌ Error en telemetría: $error');
-            if (mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                  content: Text('Error de conexión: $error'),
-                  backgroundColor: Colors.red,
-                ),
-              );
-            }
-          },
-        );
+    // Enviar UID al ESP32 para que sepa dónde guardar datos
+    await ESPService.enviarUidAlESP(userId);
   }
 
-  /// Manejar actualización de telemetría
-  void _handleTelemetryUpdate(Map<String, dynamic>? data) {
-    if (data == null || !mounted) return;
-    
-    setState(() {
-      currentHeartRate = (data['heartRate'] as num?)?.toDouble() ?? 0.0;
-      handsOnWheel = data['handsOnWheel'] as bool? ?? true;
-      accelX = (data['accelX'] as num?)?.toDouble() ?? 0.0;
-      accelY = (data['accelY'] as num?)?.toDouble() ?? 0.0;
-      pressure = (data['pressure'] as num?)?.toDouble() ?? 0.0;
-      
-      // Actualizar timestamp
-      if (data['timestamp'] != null) {
-        try {
-          lastTelemetryUpdate = DateTime.parse(data['timestamp']);
-        } catch (e) {
-          lastTelemetryUpdate = DateTime.now();
+  /// Escuchar lecturas del ESP32 en tiempo real
+  void _startListeningToESP32() {
+    final userId = FirebaseAuth.instance.currentUser?.uid;
+    if (userId == null) return;
+
+    final database = FirebaseDatabase.instance;
+    final lecturasRef = database.ref('users/$userId/lecturas');
+
+    // OPTIMIZACIÓN: Escuchar cambios en tiempo real sin limitación
+    _esp32Subscription = lecturasRef.onChildAdded.listen((DatabaseEvent event) {
+      if (event.snapshot.value == null) return;
+
+      try {
+        final lectura = event.snapshot.value as Map<dynamic, dynamic>;
+
+        // Actualizar estado inmediatamente sin setState para evitar rebuilds
+        heartRate = lectura['bpm'] as int? ?? 0;
+        fuerza = lectura['fuerza'] as int? ?? 0;
+        accelX = lectura['ax'] as int? ?? 0;
+        accelY = lectura['ay'] as int? ?? 0;
+        accelZ = lectura['az'] as int? ?? 0;
+        
+        // Detectar manos en el volante
+        final touch1 = lectura['touch1'] as int? ?? 0;
+        final touch2 = lectura['touch2'] as int? ?? 0;
+        handsOnWheel = (touch1 == 1 && touch2 == 1) || fuerza > 10;
+        
+        lastUpdate = DateTime.now();
+
+        // OPTIMIZACIÓN: Solo llamar setState cuando sea necesario
+        if (mounted) {
+          setState(() {});
+          
+          // Analizar estado de conducción
+          _analyzeDrivingStatus();
+          
+          // Verificar alertas solo si hay viaje activo
+          if (isTripActive) {
+            _checkAlerts();
+          }
         }
-      } else {
-        lastTelemetryUpdate = DateTime.now();
+      } catch (e) {
+        debugPrint('❌ Error parseando datos del ESP32: $e');
       }
     });
-
-    // Analizar estado de conducción
-    _analyzeDrivingStatus();
-    
-    // Verificar alertas (solo si hay viaje activo)
-    if (isTripActive) {
-      _checkTelemetryAlerts();
-    }
   }
 
-  /// Analizar y actualizar estado de conducción
+  /// Analizar estado de conducción basado en sensores
   void _analyzeDrivingStatus() {
     DrivingStatus newStatus = DrivingStatus.normal;
     
-    // Verificar condiciones peligrosas
-    final bool criticalHeartRate = currentHeartRate > 120 || currentHeartRate < 50;
-    final bool highHeartRate = currentHeartRate > 100 || currentHeartRate < 60;
-    final bool harshMovement = (accelX.abs() + accelY.abs()) > 3.0;
+    // Calcular movimiento brusco (aceleración total)
+    final movimientoTotal = (accelX.abs() + accelY.abs()) / 1000.0;
+    
+    // Condiciones de peligro
+    final bool heartRateCritical = heartRate > 120 || (heartRate > 0 && heartRate < 50);
+    final bool heartRateHigh = heartRate > 100 || (heartRate > 0 && heartRate < 60);
+    final bool harshMovement = movimientoTotal > 3.0;
     final bool noHands = !handsOnWheel;
     
-    if (criticalHeartRate || (harshMovement && noHands)) {
+    // Determinar estado
+    if (heartRateCritical || (harshMovement && noHands)) {
       newStatus = DrivingStatus.danger;
-    } else if (highHeartRate || harshMovement || noHands) {
+    } else if (heartRateHigh || harshMovement || noHands) {
       newStatus = DrivingStatus.warning;
     }
     
-    if (mounted && drivingStatus != newStatus) {
+    // OPTIMIZACIÓN: Solo actualizar si el estado cambió
+    if (drivingStatus != newStatus && mounted) {
       setState(() {
         drivingStatus = newStatus;
       });
     }
   }
 
-  /// Verificar alertas de telemetría (con cooldown para evitar spam)
-  void _checkTelemetryAlerts() {
+  /// Verificar y mostrar alertas
+  void _checkAlerts() {
     final now = DateTime.now();
     
-    // Alerta: Frecuencia cardíaca anormal
-    if (currentHeartRate > 0) {
-      if (currentHeartRate < 50 || currentHeartRate > 120) {
+    // Alerta de frecuencia cardíaca
+    if (heartRate > 0) {
+      if (heartRate < 50 || heartRate > 120) {
         if (_lastHeartRateAlert == null || 
             now.difference(_lastHeartRateAlert!) > _alertCooldown) {
           _showHeartRateAlert(critical: true);
           _lastHeartRateAlert = now;
         }
-      } else if (currentHeartRate < 60 || currentHeartRate > 100) {
+      } else if (heartRate < 60 || heartRate > 100) {
         if (_lastHeartRateAlert == null || 
             now.difference(_lastHeartRateAlert!) > _alertCooldown) {
           _showHeartRateAlert(critical: false);
@@ -155,7 +170,7 @@ class _HomeScreenState extends State<HomeScreen> {
       }
     }
 
-    // Alerta: Manos fuera del volante
+    // Alerta de manos fuera del volante
     if (!handsOnWheel) {
       if (_lastHandsAlert == null || 
           now.difference(_lastHandsAlert!) > const Duration(seconds: 10)) {
@@ -164,9 +179,9 @@ class _HomeScreenState extends State<HomeScreen> {
       }
     }
 
-    // Alerta: Movimiento brusco
-    final totalAccel = accelX.abs() + accelY.abs();
-    if (totalAccel > 3.0) {
+    // Alerta de movimiento brusco
+    final movimientoTotal = (accelX.abs() + accelY.abs()) / 1000.0;
+    if (movimientoTotal > 3.0) {
       if (_lastMovementAlert == null || 
           now.difference(_lastMovementAlert!) > const Duration(seconds: 20)) {
         _showMovementAlert();
@@ -175,15 +190,12 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  /// Mostrar alerta de frecuencia cardíaca
   void _showHeartRateAlert({required bool critical}) {
-    final int hr = currentHeartRate.toInt();
-    
     NotificationService.showCriticalAlert(
       title: critical ? '🚨 ALERTA CRÍTICA' : '⚠️ Atención',
       body: critical
-          ? 'Frecuencia cardíaca: $hr bpm. Detente inmediatamente.'
-          : 'Frecuencia cardíaca: $hr bpm. Considera descansar.',
+          ? 'Frecuencia cardíaca: $heartRate bpm. Detente inmediatamente.'
+          : 'Frecuencia cardíaca: $heartRate bpm. Considera descansar.',
       id: DateTime.now().millisecondsSinceEpoch ~/ 1000,
     );
     
@@ -191,15 +203,11 @@ class _HomeScreenState extends State<HomeScreen> {
       NotificationService.showCriticalDialog(
         context,
         title: '🚨 ALERTA CRÍTICA',
-        message: 'Tu frecuencia cardíaca está en $hr bpm. Por tu seguridad, detente ahora.',
-        onDismiss: () {
-          // Opcional: Notificar a contacto de emergencia
-        },
+        message: 'Tu frecuencia cardíaca está en $heartRate bpm. Detente ahora.',
       );
     }
   }
 
-  /// Mostrar alerta de manos fuera del volante
   void _showHandsAlert() {
     NotificationService.showCriticalAlert(
       title: '✋ Manos en el Volante',
@@ -208,24 +216,21 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  /// Mostrar alerta de movimiento brusco
   void _showMovementAlert() {
     NotificationService.showCriticalAlert(
-      title: '🚗 Movimiento Brusco Detectado',
-      body: 'Conduce con más suavidad para tu seguridad',
+      title: '🚗 Movimiento Brusco',
+      body: 'Conduce con más suavidad',
       id: DateTime.now().millisecondsSinceEpoch ~/ 1000,
     );
   }
 
-  /// Iniciar viaje
   Future<void> _startTrip() async {
     try {
-      // Verificar permisos de ubicación
       bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
       if (!serviceEnabled) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Por favor activa la ubicación')),
+            const SnackBar(content: Text('Activa la ubicación')),
           );
         }
         return;
@@ -237,7 +242,6 @@ class _HomeScreenState extends State<HomeScreen> {
         if (permission == LocationPermission.denied) return;
       }
 
-      // Obtener posición inicial
       final position = await Geolocator.getCurrentPosition();
 
       setState(() {
@@ -246,20 +250,6 @@ class _HomeScreenState extends State<HomeScreen> {
         startPosition = position;
         drivingStatus = DrivingStatus.normal;
       });
-
-      // Registrar inicio del viaje en Realtime Database
-      final userId = FirebaseAuth.instance.currentUser?.uid;
-      if (userId != null) {
-        await RealtimeDatabaseService.saveTripStatus(
-          userId: userId,
-          status: 'active',
-          tripData: {
-            'startTime': startTime!.toIso8601String(),
-            'startLat': position.latitude,
-            'startLng': position.longitude,
-          },
-        );
-      }
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -272,16 +262,12 @@ class _HomeScreenState extends State<HomeScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error al iniciar viaje: $e'),
-            backgroundColor: Colors.red,
-          ),
+          SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
         );
       }
     }
   }
 
-  /// Finalizar viaje
   Future<void> _endTrip() async {
     if (startTime == null || startPosition == null) return;
 
@@ -289,7 +275,6 @@ class _HomeScreenState extends State<HomeScreen> {
       final endTime = DateTime.now();
       final endPosition = await Geolocator.getCurrentPosition();
 
-      // Calcular duración y distancia
       final duration = endTime.difference(startTime!);
       final distanceMeters = Geolocator.distanceBetween(
         startPosition!.latitude,
@@ -302,10 +287,6 @@ class _HomeScreenState extends State<HomeScreen> {
       final user = FirebaseAuth.instance.currentUser;
       if (user == null) return;
 
-      // Determinar estado final del viaje
-      final String tripStatus = _getTripStatusString();
-
-      // Guardar en Firestore (historial permanente)
       await FirebaseFirestore.instance
           .collection('users')
           .doc(user.uid)
@@ -316,22 +297,10 @@ class _HomeScreenState extends State<HomeScreen> {
         'endTime': endTime,
         'duration': '${duration.inMinutes} min',
         'distance': '$distanceKm km',
-        'status': tripStatus,
-        'avgHeartRate': currentHeartRate,
+        'status': _getStatusString(),
+        'avgHeartRate': heartRate,
         'createdAt': FieldValue.serverTimestamp(),
       });
-
-      // Actualizar estado en Realtime Database
-      await RealtimeDatabaseService.saveTripStatus(
-        userId: user.uid,
-        status: 'completed',
-        tripData: {
-          'endTime': endTime.toIso8601String(),
-          'duration': duration.inMinutes,
-          'distance': distanceKm,
-          'finalStatus': tripStatus,
-        },
-      );
 
       setState(() {
         isTripActive = false;
@@ -343,7 +312,7 @@ class _HomeScreenState extends State<HomeScreen> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('Viaje finalizado y guardado correctamente'),
+            content: Text('Viaje finalizado y guardado'),
             backgroundColor: Colors.green,
           ),
         );
@@ -351,17 +320,13 @@ class _HomeScreenState extends State<HomeScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error al finalizar viaje: $e'),
-            backgroundColor: Colors.red,
-          ),
+          SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
         );
       }
     }
   }
 
-  /// Obtener string del estado del viaje
-  String _getTripStatusString() {
+  String _getStatusString() {
     switch (drivingStatus) {
       case DrivingStatus.danger:
         return 'danger';
@@ -372,20 +337,18 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  /// Llamada de emergencia (911)
   Future<void> _handleEmergencyCall() async {
     try {
       await CallService.callEmergency();
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error al llamar: $e')),
+          SnackBar(content: Text('Error: $e')),
         );
       }
     }
   }
 
-  /// Llamada a contacto de emergencia
   Future<void> _handleEmergencyContactCall() async {
     try {
       final authProvider = Provider.of<AppAuthProvider>(context, listen: false);
@@ -395,7 +358,7 @@ class _HomeScreenState extends State<HomeScreen> {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
-              content: Text('No tienes contacto de emergencia registrado'),
+              content: Text('No tienes contacto de emergencia configurado'),
             ),
           );
         }
@@ -415,58 +378,23 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     final authProvider = Provider.of<AppAuthProvider>(context);
-    
-    // Obtener color e icono según estado
     final statusInfo = _getStatusInfo();
 
     return Scaffold(
+      backgroundColor: Colors.grey.shade50,
       appBar: AppBar(
-        title: const Text('NeuroDrive'),
+        title: const Text('NeuroDrive', style: TextStyle(fontWeight: FontWeight.bold)),
         backgroundColor: AppTheme.primaryBlue,
+        elevation: 0,
         actions: [
           // Indicador de conexión ESP32
-          if (lastTelemetryUpdate != null)
+          if (lastUpdate != null)
             Padding(
               padding: const EdgeInsets.only(right: 8),
               child: Center(
-                child: _ConnectionIndicator(
-                  lastUpdate: lastTelemetryUpdate!,
-                ),
+                child: _ConnectionIndicator(lastUpdate: lastUpdate!),
               ),
             ),
-          
-          // Indicador de frecuencia cardíaca
-          if (currentHeartRate > 0 && isTripActive)
-            Padding(
-              padding: const EdgeInsets.only(right: 8),
-              child: Center(
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                  decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.2),
-                    borderRadius: BorderRadius.circular(20),
-                  ),
-                  child: Row(
-                    children: [
-                      Icon(
-                        Icons.favorite,
-                        color: _getHeartRateColor(),
-                        size: 16,
-                      ),
-                      const SizedBox(width: 4),
-                      Text(
-                        '${currentHeartRate.toInt()} bpm',
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-          
           Builder(
             builder: (context) => IconButton(
               icon: const Icon(Icons.menu),
@@ -476,146 +404,331 @@ class _HomeScreenState extends State<HomeScreen> {
         ],
       ),
       endDrawer: _buildDrawer(authProvider),
-      body: Center(
+      body: SafeArea(
         child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            // Indicadores de telemetría en tiempo real
-            if (isTripActive && currentHeartRate > 0)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 20),
+            // Banner de frecuencia cardíaca
+            if (heartRate > 0 && isTripActive)
+              AnimatedContainer(
+                duration: const Duration(milliseconds: 200), // OPTIMIZADO
+                width: double.infinity,
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [
+                      AppTheme.primaryBlue,
+                      AppTheme.primaryBlue.withOpacity(0.8),
+                    ],
+                  ),
+                ),
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    _TelemetryIndicator(
-                      icon: handsOnWheel ? Icons.back_hand : Icons.warning,
-                      label: handsOnWheel ? 'Manos OK' : 'Sin manos',
-                      color: handsOnWheel ? Colors.green : Colors.red,
+                    // OPTIMIZADO: Icono animado sin latencia
+                    AnimatedSwitcher(
+                      duration: const Duration(milliseconds: 150),
+                      child: Icon(
+                        Icons.favorite,
+                        key: ValueKey(heartRate),
+                        color: _getHeartRateColor(),
+                        size: 32,
+                      ),
                     ),
-                    const SizedBox(width: 20),
-                    _TelemetryIndicator(
-                      icon: Icons.speed,
-                      label: '${(accelX.abs() + accelY.abs()).toStringAsFixed(1)}g',
-                      color: Colors.blue,
+                    const SizedBox(width: 12),
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        // OPTIMIZADO: Texto animado
+                        AnimatedDefaultTextStyle(
+                          duration: const Duration(milliseconds: 150),
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 28,
+                            fontWeight: FontWeight.bold,
+                          ),
+                          child: Text('$heartRate BPM'),
+                        ),
+                        Text(
+                          _getHeartRateStatus(),
+                          style: TextStyle(
+                            color: Colors.white.withOpacity(0.9),
+                            fontSize: 14,
+                          ),
+                        ),
+                      ],
                     ),
                   ],
                 ),
               ),
 
-            // Indicador principal de estado
-            AnimatedContainer(
-              duration: const Duration(milliseconds: 600),
-              curve: Curves.easeInOut,
-              width: 120,
-              height: 120,
-              decoration: BoxDecoration(
-                color: statusInfo.color,
-                shape: BoxShape.circle,
-                boxShadow: [
-                  BoxShadow(
-                    color: statusInfo.color.withOpacity(0.5),
-                    blurRadius: 20,
-                    spreadRadius: 5,
-                  ),
-                ],
-              ),
-              child: Icon(statusInfo.icon, color: Colors.white, size: 70),
-            ),
-            const SizedBox(height: 20),
-            Text(
-              statusInfo.message,
-              style: TextStyle(
-                fontSize: 18,
-                color: statusInfo.color,
-                fontWeight: FontWeight.w600,
-              ),
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 40),
+            Expanded(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(20),
+                child: Column(
+                  children: [
+                    // Indicadores de sensores - OPTIMIZADOS (solo cuando hay viaje activo)
+                    if (isTripActive && heartRate > 0)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 24),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            // OPTIMIZADO: Cambio instantáneo de sensor
+                            AnimatedSwitcher(
+                              duration: const Duration(milliseconds: 150),
+                              child: _SensorIndicator(
+                                key: ValueKey(handsOnWheel),
+                                icon: handsOnWheel ? Icons.back_hand : Icons.warning,
+                                label: handsOnWheel ? 'Manos OK' : 'Sin manos',
+                                color: handsOnWheel ? Colors.green : Colors.red,
+                              ),
+                            ),
+                            const SizedBox(width: 16),
+                            AnimatedSwitcher(
+                              duration: const Duration(milliseconds: 150),
+                              child: _SensorIndicator(
+                                key: ValueKey(fuerza),
+                                icon: Icons.compress,
+                                label: 'Fuerza: $fuerza%',
+                                color: fuerza > 50 ? Colors.orange : Colors.blue,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
 
-            // Botón de iniciar/finalizar viaje
-            AnimatedContainer(
-              duration: const Duration(milliseconds: 400),
-              height: isTripActive ? 55 : 70,
-              width: isTripActive ? 200 : 250,
-              child: ElevatedButton(
-                onPressed: isTripActive ? _endTrip : _startTrip,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: isTripActive ? Colors.red : AppTheme.primaryBlue,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(30),
-                  ),
-                ),
-                child: Text(
-                  isTripActive ? "Finalizar viaje" : "Iniciar viaje",
-                  style: const TextStyle(fontSize: 18, color: Colors.white),
+                    // Logo o estado según si hay viaje activo
+                    if (!isTripActive)
+                      // Logo cuando NO hay viaje activo
+                      Container(
+                        width: 200,
+                        height: 200,
+                        decoration: BoxDecoration(
+                          color: AppTheme.primaryBlue.withOpacity(0.1),
+                          shape: BoxShape.circle,
+                        ),
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(
+                              Icons.directions_car,
+                              size: 80,
+                              color: AppTheme.primaryBlue,
+                            ),
+                            const SizedBox(height: 12),
+                            Text(
+                              'NeuroDrive',
+                              style: TextStyle(
+                                fontSize: 20,
+                                fontWeight: FontWeight.bold,
+                                color: AppTheme.primaryBlue,
+                              ),
+                            ),
+                          ],
+                        ),
+                      )
+                    else
+                      // Círculo de estado - OPTIMIZADO (solo cuando hay viaje activo)
+                      AnimatedContainer(
+                        duration: const Duration(milliseconds: 300),
+                        curve: Curves.easeOut,
+                        width: 180,
+                        height: 180,
+                        decoration: BoxDecoration(
+                          color: statusInfo.color,
+                          shape: BoxShape.circle,
+                          boxShadow: [
+                            BoxShadow(
+                              color: statusInfo.color.withOpacity(0.4),
+                              blurRadius: 30,
+                              spreadRadius: 10,
+                            ),
+                          ],
+                        ),
+                        child: AnimatedSwitcher(
+                          duration: const Duration(milliseconds: 200),
+                          child: Icon(
+                            statusInfo.icon,
+                            key: ValueKey(statusInfo.icon),
+                            color: Colors.white,
+                            size: 90,
+                          ),
+                        ),
+                      ),
+                    
+                    const SizedBox(height: 24),
+                    
+                    // Mensaje de estado - OPTIMIZADO (solo cuando hay viaje activo)
+                    if (isTripActive)
+                      AnimatedContainer(
+                        duration: const Duration(milliseconds: 300),
+                        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                        decoration: BoxDecoration(
+                          color: statusInfo.color.withOpacity(0.1),
+                          borderRadius: BorderRadius.circular(20),
+                          border: Border.all(color: statusInfo.color.withOpacity(0.3)),
+                        ),
+                        child: AnimatedDefaultTextStyle(
+                          duration: const Duration(milliseconds: 300),
+                          style: TextStyle(
+                            fontSize: 18,
+                            color: statusInfo.color,
+                            fontWeight: FontWeight.w600,
+                          ),
+                          child: Text(
+                            statusInfo.message,
+                            textAlign: TextAlign.center,
+                          ),
+                        ),
+                      )
+                    else
+                      // Mensaje de bienvenida cuando NO hay viaje activo
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                        decoration: BoxDecoration(
+                          color: AppTheme.primaryBlue.withOpacity(0.1),
+                          borderRadius: BorderRadius.circular(20),
+                          border: Border.all(color: AppTheme.primaryBlue.withOpacity(0.3)),
+                        ),
+                        child: Text(
+                          'Presiona "Iniciar viaje" para comenzar',
+                          style: TextStyle(
+                            fontSize: 16,
+                            color: AppTheme.primaryBlue,
+                            fontWeight: FontWeight.w500,
+                          ),
+                          textAlign: TextAlign.center,
+                        ),
+                      ),
+                    
+                    const SizedBox(height: 40),
+
+                    // Botón de viaje
+                    SizedBox(
+                      width: double.infinity,
+                      height: 60,
+                      child: ElevatedButton(
+                        onPressed: isTripActive ? _endTrip : _startTrip,
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: isTripActive ? Colors.red : AppTheme.primaryBlue,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(30),
+                          ),
+                          elevation: 5,
+                        ),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(
+                              isTripActive ? Icons.stop_circle : Icons.play_circle_filled,
+                              size: 28,
+                            ),
+                            const SizedBox(width: 12),
+                            Text(
+                              isTripActive ? "Finalizar viaje" : "Iniciar viaje",
+                              style: const TextStyle(
+                                fontSize: 20,
+                                color: Colors.white,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                    
+                    const SizedBox(height: 32),
+
+                    // Botones de emergencia
+                    Row(
+                      children: [
+                        Expanded(
+                          child: ElevatedButton(
+                            onPressed: _handleEmergencyCall,
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.red.shade600,
+                              padding: const EdgeInsets.symmetric(vertical: 16),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(16),
+                              ),
+                            ),
+                            child: const Column(
+                              children: [
+                                Icon(Icons.emergency, size: 32, color: Colors.white),
+                                SizedBox(height: 8),
+                                Text('SOS 123', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white)),
+                              ],
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 16),
+                        Expanded(
+                          child: ElevatedButton(
+                            onPressed: _handleEmergencyContactCall,
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.deepOrange.shade600,
+                              padding: const EdgeInsets.symmetric(vertical: 16),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(16),
+                              ),
+                            ),
+                            child: const Column(
+                              children: [
+                                Icon(Icons.phone, size: 32, color: Colors.white),
+                                SizedBox(height: 8),
+                                Text('Contacto', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white)),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
                 ),
               ),
             ),
           ],
         ),
       ),
-      floatingActionButton: Column(
-        mainAxisAlignment: MainAxisAlignment.end,
-        children: [
-          FloatingActionButton.extended(
-            heroTag: 'emergency',
-            onPressed: _handleEmergencyCall,
-            label: const Text('SOS 911'),
-            icon: const Icon(Icons.emergency),
-            backgroundColor: Colors.red.shade600,
-          ),
-          const SizedBox(height: 12),
-          FloatingActionButton.extended(
-            heroTag: 'emergency_contact',
-            onPressed: _handleEmergencyContactCall,
-            label: const Text('Contacto'),
-            icon: const Icon(Icons.phone),
-            backgroundColor: Colors.deepOrange.shade600,
-          ),
+      bottomNavigationBar: BottomNavigationBar(
+        currentIndex: 0,
+        selectedItemColor: AppTheme.primaryBlue,
+        items: const [
+          BottomNavigationBarItem(icon: Icon(Icons.home), label: 'Inicio'),
+          BottomNavigationBarItem(icon: Icon(Icons.chat_bubble_outline), label: 'Chat'),
+          BottomNavigationBarItem(icon: Icon(Icons.history), label: 'Historial'),
         ],
-      ),
-      floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
-      bottomNavigationBar: BottomAppBar(
-        shape: const CircularNotchedRectangle(),
-        notchMargin: 10,
-        color: Colors.grey.shade100,
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.spaceAround,
-          children: [
-            IconButton(
-              icon: const Icon(Icons.home),
-              color: AppTheme.primaryBlue,
-              onPressed: () {},
-            ),
-            IconButton(
-              icon: const Icon(Icons.history),
-              color: Colors.grey,
-              onPressed: () => Navigator.pushNamed(context, '/history'),
-            ),
-            const SizedBox(width: 80),
-          ],
-        ),
+        onTap: (index) {
+          if (index == 1) Navigator.pushNamed(context, '/chat');
+          if (index == 2) Navigator.pushNamed(context, '/history');
+        },
       ),
     );
   }
 
-  /// Construir drawer
   Widget _buildDrawer(AppAuthProvider authProvider) {
     return Drawer(
       child: ListView(
         padding: EdgeInsets.zero,
         children: [
           DrawerHeader(
-            decoration: const BoxDecoration(color: Color(0xFF0C3C78)),
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                colors: [AppTheme.primaryBlue, AppTheme.primaryBlue.withOpacity(0.8)],
+              ),
+            ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Icon(Icons.account_circle, size: 50, color: Colors.white),
-                const SizedBox(height: 10),
+                const CircleAvatar(
+                  radius: 30,
+                  backgroundColor: Colors.white,
+                  child: Icon(Icons.person, size: 40, color: AppTheme.primaryBlue),
+                ),
+                const SizedBox(height: 12),
                 Text(
                   authProvider.user?.name ?? 'Usuario',
-                  style: const TextStyle(color: Colors.white, fontSize: 18),
+                  style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
                 ),
                 Text(
                   authProvider.user?.email ?? '',
@@ -630,13 +743,11 @@ class _HomeScreenState extends State<HomeScreen> {
             onTap: () {},
           ),
           ListTile(
-            leading: const Icon(Icons.logout),
-            title: const Text('Cerrar sesión'),
+            leading: const Icon(Icons.logout, color: Colors.red),
+            title: const Text('Cerrar sesión', style: TextStyle(color: Colors.red)),
             onTap: () async {
               await authProvider.logout();
-              if (context.mounted) {
-                Navigator.pushReplacementNamed(context, '/login');
-              }
+              if (context.mounted) Navigator.pushReplacementNamed(context, '/login');
             },
           ),
         ],
@@ -644,67 +755,47 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  /// Obtener información del estado actual
   _StatusInfo _getStatusInfo() {
     switch (drivingStatus) {
       case DrivingStatus.danger:
-        return _StatusInfo(
-          color: Colors.red.shade600,
-          icon: Icons.warning_rounded,
-          message: 'Conducción peligrosa, ¡Detente!',
-        );
+        return _StatusInfo(color: Colors.red.shade600, icon: Icons.warning_rounded, message: '¡Peligro! Detente');
       case DrivingStatus.warning:
-        return _StatusInfo(
-          color: Colors.amber.shade600,
-          icon: Icons.error_outline,
-          message: 'Conducción temerosa, ¡Descansa!',
-        );
+        return _StatusInfo(color: Colors.amber.shade600, icon: Icons.error_outline, message: 'Conduce con precaución');
       case DrivingStatus.normal:
-        return _StatusInfo(
-          color: Colors.green.shade600,
-          icon: Icons.check_circle_outline,
-          message: 'Conducción excelente, ¡Sigue así!',
-        );
+        return _StatusInfo(color: Colors.green.shade600, icon: Icons.check_circle_outline, message: '¡Excelente conducción!');
     }
   }
 
-  /// Obtener color de frecuencia cardíaca
   Color _getHeartRateColor() {
-    if (currentHeartRate < 50 || currentHeartRate > 120) {
-      return Colors.red;
-    } else if (currentHeartRate < 60 || currentHeartRate > 100) {
-      return Colors.orange;
-    }
-    return Colors.pink.shade200;
+    if (heartRate < 50 || heartRate > 120) return Colors.red;
+    if (heartRate < 60 || heartRate > 100) return Colors.orange;
+    return Colors.greenAccent;
+  }
+
+  String _getHeartRateStatus() {
+    if (heartRate < 50) return 'Muy baja';
+    if (heartRate < 60) return 'Baja';
+    if (heartRate > 120) return 'Muy alta';
+    if (heartRate > 100) return 'Alta';
+    return 'Normal';
   }
 }
 
-// Enums y clases auxiliares
+// Enums y widgets auxiliares
 enum DrivingStatus { normal, warning, danger }
 
 class _StatusInfo {
   final Color color;
   final IconData icon;
   final String message;
-
-  _StatusInfo({
-    required this.color,
-    required this.icon,
-    required this.message,
-  });
+  _StatusInfo({required this.color, required this.icon, required this.message});
 }
 
-// Widget indicador de telemetría
-class _TelemetryIndicator extends StatelessWidget {
+class _SensorIndicator extends StatelessWidget {
   final IconData icon;
   final String label;
   final Color color;
-
-  const _TelemetryIndicator({
-    required this.icon,
-    required this.label,
-    required this.color,
-  });
+  const _SensorIndicator({super.key, required this.icon, required this.label, required this.color});
 
   @override
   Widget build(BuildContext context) {
@@ -716,26 +807,19 @@ class _TelemetryIndicator extends StatelessWidget {
         border: Border.all(color: color, width: 2),
       ),
       child: Row(
+        mainAxisSize: MainAxisSize.min,
         children: [
           Icon(icon, color: color, size: 20),
           const SizedBox(width: 8),
-          Text(
-            label,
-            style: TextStyle(
-              color: color,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
+          Text(label, style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 14)),
         ],
       ),
     );
   }
 }
 
-// Widget indicador de conexión
 class _ConnectionIndicator extends StatelessWidget {
   final DateTime lastUpdate;
-
   const _ConnectionIndicator({required this.lastUpdate});
 
   @override
@@ -752,19 +836,11 @@ class _ConnectionIndicator extends StatelessWidget {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(
-            isConnected ? Icons.wifi : Icons.wifi_off,
-            size: 14,
-            color: Colors.white,
-          ),
+          Icon(isConnected ? Icons.wifi : Icons.wifi_off, size: 14, color: Colors.white),
           const SizedBox(width: 4),
           Text(
             isConnected ? 'ESP32' : 'Descon.',
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 11,
-              fontWeight: FontWeight.bold,
-            ),
+            style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold),
           ),
         ],
       ),

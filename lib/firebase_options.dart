@@ -17,10 +17,7 @@ import 'package:flutter/foundation.dart'
 class DefaultFirebaseOptions {
   static FirebaseOptions get currentPlatform {
     if (kIsWeb) {
-      throw UnsupportedError(
-        'DefaultFirebaseOptions have not been configured for web - '
-        'you can reconfigure this by running the FlutterFire CLI again.',
-      );
+      return web;
     }
     switch (defaultTargetPlatform) {
       case TargetPlatform.android:
@@ -50,20 +47,33 @@ class DefaultFirebaseOptions {
   }
 
   static const FirebaseOptions android = FirebaseOptions(
-    apiKey: 'AIzaSyCQYK_yWg5UOEdlY3F5xie24xPgBNUYB9Q',
-    appId: '1:477200662101:android:ebb594b1dd3d5676ff5edc',
-    messagingSenderId: '477200662101',
-    projectId: 'neurodrive-1a7e9',
-    storageBucket: 'neurodrive-1a7e9.firebasestorage.app',
+    apiKey: 'AIzaSyBbvHE3myco9Le4PVWfUviqM9UCuF-BE18',
+    appId: '1:376572217238:android:c3c8613e3e1e2f67baffb7',
+    messagingSenderId: '376572217238',
+    projectId: 'neurodrive-5660a',
+    databaseURL: 'https://neurodrive-5660a-default-rtdb.firebaseio.com',
+    storageBucket: 'neurodrive-5660a.firebasestorage.app',
   );
 
   static const FirebaseOptions ios = FirebaseOptions(
-    apiKey: 'AIzaSyA03yit1nY1pmMKRyBrkq1ezR3tlgiNtaU',
-    appId: '1:477200662101:ios:a84c11658156aa96ff5edc',
-    messagingSenderId: '477200662101',
-    projectId: 'neurodrive-1a7e9',
-    storageBucket: 'neurodrive-1a7e9.firebasestorage.app',
+    apiKey: 'AIzaSyA-tDHgcK6pCppuzDxh1hpNWYCSrTrrJw4',
+    appId: '1:376572217238:ios:612c2ce304a9c7f3baffb7',
+    messagingSenderId: '376572217238',
+    projectId: 'neurodrive-5660a',
+    databaseURL: 'https://neurodrive-5660a-default-rtdb.firebaseio.com',
+    storageBucket: 'neurodrive-5660a.firebasestorage.app',
     iosBundleId: 'com.example.neurodrive',
+  );
+
+  static const FirebaseOptions web = FirebaseOptions(
+    apiKey: 'AIzaSyCqTBcGmbmGpp_5jVjd_Fe4cvnmWF4re80',
+    appId: '1:376572217238:web:7ad885498494fcd0baffb7',
+    messagingSenderId: '376572217238',
+    projectId: 'neurodrive-5660a',
+    authDomain: 'neurodrive-5660a.firebaseapp.com',
+    databaseURL: 'https://neurodrive-5660a-default-rtdb.firebaseio.com',
+    storageBucket: 'neurodrive-5660a.firebasestorage.app',
+    measurementId: 'G-T4QQBN8SBT',
   );
 
 }

@@ -1,14 +1,14 @@
 {
   "project_info": {
-    "project_number": "477200662101",
-    "firebase_url": "https://neurodrive-1a7e9-default-rtdb.firebaseio.com",
-    "project_id": "neurodrive-1a7e9",
-    "storage_bucket": "neurodrive-1a7e9.firebasestorage.app"
+    "project_number": "376572217238",
+    "firebase_url": "https://neurodrive-5660a-default-rtdb.firebaseio.com",
+    "project_id": "neurodrive-5660a",
+    "storage_bucket": "neurodrive-5660a.firebasestorage.app"
   },
   "client": [
     {
       "client_info": {
-        "mobilesdk_app_id": "1:477200662101:android:ebb594b1dd3d5676ff5edc",
+        "mobilesdk_app_id": "1:376572217238:android:c3c8613e3e1e2f67baffb7",
         "android_client_info": {
           "package_name": "com.example.neurodrive"
         }
@@ -16,7 +16,7 @@
       "oauth_client": [],
       "api_key": [
         {
-          "current_key": "AIzaSyCQYK_yWg5UOEdlY3F5xie24xPgBNUYB9Q"
+          "current_key": "AIzaSyBbvHE3myco9Le4PVWfUviqM9UCuF-BE18"
         }
       ],
       "services": {

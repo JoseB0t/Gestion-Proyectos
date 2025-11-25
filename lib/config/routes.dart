@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:neurodrive/chat_screen.dart';
+import 'package:neurodrive/main.dart';
 import 'package:neurodrive/presentation/screens/auth/login_screen.dart';
 import 'package:neurodrive/presentation/screens/auth/register_screen.dart';
 import 'package:neurodrive/presentation/screens/home/home_screen.dart';
@@ -11,11 +13,13 @@ import 'package:neurodrive/presentation/screens/admin/reports_screen.dart';
 import 'package:neurodrive/presentation/screens/admin/notifications_screen.dart';
 
 final Map<String, WidgetBuilder> appRoutes = {
+  '/': (context) => const StartScreen(),
   '/login': (context) => const LoginScreen(),
   '/register': (context) => const RegisterScreen(),
   '/home': (context) => const HomeScreen(),
   '/history': (context) => const HistoryScreen(),
-  
+  '/chat': (context) => const ChatScreen(),
+
   // Rutas de administrador
   '/admin-dashboard': (context) => const AdminDashboardScreen(),
   '/admin-drivers': (context) => const DriversListScreen(),
@@ -32,7 +36,7 @@ class RoleBasedNavigation {
       Navigator.pushReplacementNamed(context, '/home');
     }
   }
-  
+
   static List<NavigationItem> getNavigationItems(String role) {
     if (role == 'admin') {
       return [
@@ -59,11 +63,7 @@ class RoleBasedNavigation {
       ];
     } else {
       return [
-        NavigationItem(
-          icon: Icons.home,
-          label: 'Inicio',
-          route: '/home',
-        ),
+        NavigationItem(icon: Icons.home, label: 'Inicio', route: '/home'),
         NavigationItem(
           icon: Icons.history,
           label: 'Historial',

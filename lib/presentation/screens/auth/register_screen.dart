@@ -79,16 +79,36 @@ class _RegisterScreenState extends State<RegisterScreen> {
                   decoration: const InputDecoration(labelText: 'Teléfono'),
                   keyboardType: TextInputType.phone,
                   onChanged: (v) => phone = v,
+                  validator: (v) {
+                    if (v == null || v.isEmpty) return 'Obligatorio';
+                    if (!RegExp(r'^[0-9]+$').hasMatch(v)) return 'Solo números';
+                    if (v.length != 10) return 'Debe tener 10 dígitos';
+                    return null;
+                  },
                 ),
                 const SizedBox(height: 12),
                 TextFormField(
                   decoration: const InputDecoration(labelText: 'Placa del camión'),
-                  onChanged: (v) => plate = v,
+                  onChanged: (v) => plate = v.toUpperCase(),
+                  validator: (v) {
+                    if (v == null || v.isEmpty) return 'Obligatorio';
+                    if (!RegExp(r'^[A-Z]{3}[0-9]{3}$').hasMatch(v)) {
+                      return 'Formato inválido (ej: ABC123)';
+                    }
+                    return null;
+                  },
                 ),
                 const SizedBox(height: 12),
                 TextFormField(
                   decoration: const InputDecoration(labelText: 'Contacto de emergencia'),
+                  keyboardType: TextInputType.phone,
                   onChanged: (v) => emergencyContact = v,
+                  validator: (v) {
+                    if (v == null || v.isEmpty) return 'Obligatorio';
+                    if (!RegExp(r'^[0-9]+$').hasMatch(v)) return 'Solo números';
+                    if (v.length != 10) return 'Debe tener 10 dígitos';
+                    return null;
+                  },
                 ),
                 const SizedBox(height: 18),
                 SizedBox(
